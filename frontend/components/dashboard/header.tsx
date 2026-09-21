@@ -1,6 +1,5 @@
 "use client"
 
-import { Lock } from "lucide-react"
 import {
   Select,
   SelectContent,
@@ -9,8 +8,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { SYMBOLS, getSymbolMeta } from "@/lib/mock-data"
-import type { SymbolId } from "@/lib/types"
+import { MOCK_BOTS, getSymbolMeta } from "@/lib/mock-data"
+import type { BotId } from "@/lib/types"
 import { useBotStore } from "./bot-store"
 import { CurrentPrice } from "./current-price"
 import { BotStatusBadge, ConnectionBadge, PaperTradingBadge } from "./status-badges"
@@ -19,8 +18,13 @@ function displaySymbol(id: string) {
   return id.replace("/", " / ")
 }
 
+function displayBot(id: string) {
+  const bot = MOCK_BOTS.find((candidate) => candidate.id === id)
+  return bot ? `${displaySymbol(bot.config.symbol)} Bot` : id
+}
+
 export function DashboardHeader() {
-  const { symbol, currentPrice, priceDir, botStatus, connection, symbolChangeable, loading, dispatch } =
+  const { activeBotId, symbol, currentPrice, priceDir, botStatus, connection, loading, dispatch } =
     useBotStore()
   const meta = getSymbolMeta(symbol)
 
@@ -41,20 +45,18 @@ export function DashboardHeader() {
 
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-1">
-            <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Symbol</span>
+            <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Bot</span>
             <Select
-              value={symbol}
-              onValueChange={(v) => dispatch({ type: "SET_SYMBOL", symbol: v as SymbolId })}
-              disabled={!symbolChangeable}
+              value={activeBotId}
+              onValueChange={(v) => dispatch({ type: "SET_ACTIVE_BOT", botId: v as BotId })}
             >
-              <SelectTrigger className="h-9 min-w-[150px] font-semibold" aria-label="Select trading symbol">
-                {symbolChangeable ? null : <Lock className="size-3 text-muted-foreground" aria-hidden />}
-                <SelectValue>{(v: string) => displaySymbol(v)}</SelectValue>
+              <SelectTrigger className="h-9 min-w-[170px] font-semibold" aria-label="Select active bot">
+                <SelectValue>{(v: string) => displayBot(v)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {SYMBOLS.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {displaySymbol(s.id)}
+                {MOCK_BOTS.map((bot) => (
+                  <SelectItem key={bot.id} value={bot.id}>
+                    {displaySymbol(bot.config.symbol)} Bot
                   </SelectItem>
                 ))}
               </SelectContent>

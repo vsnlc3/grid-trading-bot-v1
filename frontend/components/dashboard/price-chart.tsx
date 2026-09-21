@@ -121,6 +121,8 @@ export function PriceChart({
       borderVisible: false,
       wickUpColor: COLORS.up,
       wickDownColor: COLORS.down,
+      lastValueVisible: false,
+      priceLineVisible: false,
       priceFormat: { type: "price", precision: latest.current.precision, minMove: 10 ** -latest.current.precision },
     })
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -241,14 +243,14 @@ export function PriceChart({
       })
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gridSignature])
+  }, [gridSignature, currentPrice])
 
   // Markers from executed trades.
   React.useEffect(() => {
     if (!markersRef.current) return
     markersRef.current.setMarkers(buildMarkers(trades, symbol, candles, TIMEFRAME_SECONDS[timeframe]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trades, symbol])
+  }, [trades, symbol, candles, timeframe])
 
   return <div ref={containerRef} className="h-full w-full" aria-label="Price chart with grid lines and trade markers" role="img" />
 }

@@ -1,5 +1,7 @@
 export type SymbolId = "HYPE/USDC" | "BTC/USDC" | "ETH/USDC" | "SOL/USDC"
 
+export type BotId = "bot-hype" | "bot-btc" | "bot-eth" | "bot-sol"
+
 export type Timeframe = "1m" | "5m" | "15m"
 
 export type BotStatus = "RUNNING" | "PAUSED" | "STOPPED"
@@ -56,6 +58,7 @@ export interface Position {
   symbol: SymbolId
   gridPrice: number
   buyPrice: number
+  buyFee: number
   quantity: number
   sellTarget: number
   openedAt: number

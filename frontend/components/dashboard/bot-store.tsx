@@ -4,19 +4,16 @@ import * as React from "react"
 import {
   buildGridLevels,
   computePortfolio,
-  DEFAULT_CONFIG,
+  configForSymbol,
   generateCandles,
   getSymbolMeta,
   gridInterval,
-  INITIAL_BALANCE,
-  INITIAL_POSITIONS,
-  INITIAL_REALIZED_PNL,
-  INITIAL_TRADES,
+  MOCK_BOTS,
 } from "@/lib/mock-data"
 import type {
   BotConfig,
+  BotId,
   BotStatus,
-  BottomTab,
   Candle,
   ConnectionStatus,
   PaperBalance,
@@ -26,16 +23,16 @@ import type {
   Trade,
 } from "@/lib/types"
 
-interface State {
-  loading: boolean
-  symbol: SymbolId
-  timeframe: Timeframe
+type CandleMap = Record<Timeframe, Candle[]>
+
+interface MockBotState {
+  id: BotId
   botStatus: BotStatus
   connection: ConnectionStatus
   config: BotConfig
-  bottomTab: BottomTab
-  candles: Candle[]
+  candles: CandleMap
   currentPrice: number
+  previousPrice: number | null
   priceDir: "up" | "down" | null
   positions: Position[]
   trades: Trade[]
@@ -43,10 +40,17 @@ interface State {
   realizedPnl: number
 }
 
+interface State {
+  loading: boolean
+  activeBotId: BotId
+  timeframe: Timeframe
+  bots: Record<BotId, MockBotState>
+}
+
 type Action =
   | { type: "INIT_DONE" }
   | { type: "TICK" }
-  | { type: "SET_SYMBOL"; symbol: SymbolId }
+  | { type: "SET_ACTIVE_BOT"; botId: BotId }
   | { type: "SET_TIMEFRAME"; timeframe: Timeframe }
   | { type: "START" }
   | { type: "PAUSE" }
@@ -54,7 +58,6 @@ type Action =
   | { type: "STOP" }
   | { type: "UPDATE_CONFIG"; config: BotConfig }
   | { type: "RESET_CONFIG" }
-  | { type: "SET_TAB"; tab: BottomTab }
 
 function round(value: number, precision: number): number {
   const f = 10 ** precision
@@ -65,12 +68,7 @@ function makeId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`
 }
 
-function freshScenario(config: BotConfig): {
-  positions: Position[]
-  trades: Trade[]
-  balance: PaperBalance
-  realizedPnl: number
-} {
+function freshScenario(config: BotConfig): Pick<MockBotState, "positions" | "trades" | "balance" | "realizedPnl"> {
   return {
     positions: [],
     trades: [],
@@ -79,22 +77,11 @@ function freshScenario(config: BotConfig): {
   }
 }
 
-function initialState(): State {
+function makeCandleMap(symbol: SymbolId): CandleMap {
   return {
-    loading: true,
-    symbol: DEFAULT_CONFIG.symbol,
-    timeframe: "5m",
-    botStatus: "RUNNING",
-    connection: "LIVE",
-    config: DEFAULT_CONFIG,
-    bottomTab: "positions",
-    candles: generateCandles(DEFAULT_CONFIG.symbol, "5m"),
-    currentPrice: getSymbolMeta(DEFAULT_CONFIG.symbol).referencePrice,
-    priceDir: null,
-    positions: INITIAL_POSITIONS,
-    trades: INITIAL_TRADES,
-    balance: INITIAL_BALANCE,
-    realizedPnl: INITIAL_REALIZED_PNL,
+    "1m": generateCandles(symbol, "1m"),
+    "5m": generateCandles(symbol, "5m"),
+    "15m": generateCandles(symbol, "15m"),
   }
 }
 
@@ -109,114 +96,186 @@ function updateLastCandle(candles: Candle[], price: number): Candle[] {
   return next
 }
 
-function tick(state: State): State {
-  const meta = getSymbolMeta(state.symbol)
-  const prev = state.currentPrice
+function updateCandleMap(candles: CandleMap, price: number): CandleMap {
+  return {
+    "1m": updateLastCandle(candles["1m"], price),
+    "5m": updateLastCandle(candles["5m"], price),
+    "15m": updateLastCandle(candles["15m"], price),
+  }
+}
+
+function makeBotState(definition: (typeof MOCK_BOTS)[number]): MockBotState {
+  return {
+    id: definition.id,
+    botStatus: definition.status,
+    connection: definition.connection,
+    config: definition.config,
+    candles: makeCandleMap(definition.config.symbol),
+    currentPrice: definition.currentPrice,
+    previousPrice: definition.currentPrice,
+    priceDir: null,
+    positions: definition.positions,
+    trades: definition.trades,
+    balance: definition.balance,
+    realizedPnl: definition.realizedPnl,
+  }
+}
+
+function initialState(): State {
+  const bots = Object.fromEntries(MOCK_BOTS.map((definition) => [definition.id, makeBotState(definition)])) as Record<
+    BotId,
+    MockBotState
+  >
+
+  return {
+    loading: true,
+    activeBotId: "bot-hype",
+    timeframe: "5m",
+    bots,
+  }
+}
+
+function fillSell(bot: MockBotState, position: Position): MockBotState {
+  const meta = getSymbolMeta(bot.config.symbol)
+  const execPrice = round(position.sellTarget * (1 - bot.config.slippageRate), meta.pricePrecision)
+  const gross = execPrice * position.quantity
+  const fee = round(gross * bot.config.feeRate, 2)
+  const pnl = round(
+    (execPrice - position.buyPrice) * position.quantity - position.buyFee - fee,
+    2,
+  )
+  const trade: Trade = {
+    id: makeId("t"),
+    timestamp: Date.now(),
+    symbol: bot.config.symbol,
+    side: "SELL",
+    gridPrice: position.sellTarget,
+    executionPrice: execPrice,
+    quantity: position.quantity,
+    fee,
+    pnl,
+  }
+
+  return {
+    ...bot,
+    positions: bot.positions.filter((candidate) => candidate.id !== position.id),
+    trades: [trade, ...bot.trades].slice(0, 80),
+    balance: {
+      quote: round(bot.balance.quote + gross - fee, 4),
+      base: round(bot.balance.base - position.quantity, 6),
+    },
+    realizedPnl: round(bot.realizedPnl + pnl, 2),
+  }
+}
+
+function fillBuy(bot: MockBotState, level: ReturnType<typeof buildGridLevels>[number]): MockBotState {
+  const meta = getSymbolMeta(bot.config.symbol)
+  const interval = gridInterval(bot.config)
+  const buyPrice = round(level.price * (1 + bot.config.slippageRate), meta.pricePrecision)
+  const quantity = round(bot.config.orderAmount / buyPrice, 6)
+  const fee = round(bot.config.orderAmount * bot.config.feeRate, 2)
+  const trade: Trade = {
+    id: makeId("t"),
+    timestamp: Date.now(),
+    symbol: bot.config.symbol,
+    side: "BUY",
+    gridPrice: level.price,
+    executionPrice: buyPrice,
+    quantity,
+    fee,
+  }
+  const position: Position = {
+    id: makeId("pos"),
+    gridId: level.index,
+    symbol: bot.config.symbol,
+    gridPrice: level.price,
+    buyPrice,
+    buyFee: fee,
+    quantity,
+    sellTarget: round(level.price + interval, meta.pricePrecision),
+    openedAt: Date.now(),
+  }
+
+  return {
+    ...bot,
+    positions: [...bot.positions, position],
+    trades: [trade, ...bot.trades].slice(0, 80),
+    balance: {
+      quote: round(bot.balance.quote - bot.config.orderAmount - fee, 4),
+      base: round(bot.balance.base + quantity, 6),
+    },
+  }
+}
+
+function tickBot(bot: MockBotState): MockBotState {
+  const meta = getSymbolMeta(bot.config.symbol)
+  const previousMarketPrice = bot.currentPrice
   const volatility = meta.referencePrice * 0.0018
 
-  // random walk with light mean reversion toward the grid range midpoint
-  const mid = (state.config.lowerPrice + state.config.upperPrice) / 2
-  let price = prev + (Math.random() - 0.5) * volatility * 2
+  // Random walk with light mean reversion toward this bot's own grid range.
+  const mid = (bot.config.lowerPrice + bot.config.upperPrice) / 2
+  let price = previousMarketPrice + (Math.random() - 0.5) * volatility * 2
   price += (mid - price) * 0.015
-  // keep the price within a sensible band around the grid
-  const floor = state.config.lowerPrice * 0.97
-  const ceil = state.config.upperPrice * 1.03
-  price = Math.min(ceil, Math.max(floor, price))
-  price = round(price, meta.pricePrecision)
+  const floor = bot.config.lowerPrice * 0.97
+  const ceil = bot.config.upperPrice * 1.03
+  price = round(Math.min(ceil, Math.max(floor, price)), meta.pricePrecision)
 
   const priceDir: "up" | "down" | null =
-    price > prev ? "up" : price < prev ? "down" : state.priceDir
-  const candles = updateLastCandle(state.candles, price)
-
-  let next: State = { ...state, currentPrice: price, priceDir, candles }
-
-  // Paper trading only executes while RUNNING and on the bot's configured symbol.
-  if (state.botStatus !== "RUNNING" || state.symbol !== state.config.symbol) {
-    return next
+    price > previousMarketPrice ? "up" : price < previousMarketPrice ? "down" : bot.priceDir
+  const updated: MockBotState = {
+    ...bot,
+    currentPrice: price,
+    previousPrice: price,
+    priceDir,
+    candles: updateCandleMap(bot.candles, price),
   }
 
-  const interval = gridInterval(state.config)
-  const openGridIds = new Set(state.positions.map((p) => p.gridId))
+  // The first update after START only establishes Previous Price.
+  if (bot.previousPrice === null || bot.botStatus !== "RUNNING") return updated
 
-  // SELL: an open position whose sell target was crossed upward this tick.
-  const sellPos = state.positions.find((p) => prev < p.sellTarget && price >= p.sellTarget)
-  if (sellPos) {
-    const execPrice = round(sellPos.sellTarget * (1 - state.config.slippageRate), meta.pricePrecision)
-    const gross = execPrice * sellPos.quantity
-    const fee = round(gross * state.config.feeRate, 2)
-    const pnl = round((execPrice - sellPos.buyPrice) * sellPos.quantity - fee, 2)
-    const trade: Trade = {
-      id: makeId("t"),
-      timestamp: Date.now(),
-      symbol: state.symbol,
-      side: "SELL",
-      gridPrice: sellPos.gridPrice,
-      executionPrice: execPrice,
-      quantity: sellPos.quantity,
-      fee,
-      pnl,
-    }
-    next = {
-      ...next,
-      positions: state.positions.filter((p) => p.id !== sellPos.id),
-      trades: [trade, ...state.trades].slice(0, 80),
-      balance: {
-        quote: round(state.balance.quote + gross - fee, 4),
-        base: round(state.balance.base - sellPos.quantity, 6),
-      },
-      realizedPnl: round(state.realizedPnl + pnl, 2),
-    }
-    return next
-  }
+  let next = updated
+  const previousPrice = bot.previousPrice
 
-  // BUY: a READY interior grid line crossed downward this tick.
-  const levels = buildGridLevels(state.config, openGridIds)
-  const buyLevel = levels.find(
-    (l) =>
-      l.index >= 1 &&
-      l.index <= state.config.gridCount - 1 &&
-      l.state === "READY" &&
-      prev > l.price &&
-      price <= l.price,
-  )
-  if (buyLevel && state.balance.quote >= state.config.orderAmount) {
-    const buyPrice = round(buyLevel.price * (1 + state.config.slippageRate), meta.pricePrecision)
-    const quantity = round(state.config.orderAmount / buyPrice, 6)
-    const fee = round(state.config.orderAmount * state.config.feeRate, 2)
-    const sellTarget = round(buyLevel.price + interval, meta.pricePrecision)
-    const trade: Trade = {
-      id: makeId("t"),
-      timestamp: Date.now(),
-      symbol: state.symbol,
-      side: "BUY",
-      gridPrice: buyLevel.price,
-      executionPrice: buyPrice,
-      quantity,
-      fee,
+  if (price > previousPrice) {
+    const sellPositions = bot.positions
+      .filter((position) => previousPrice < position.sellTarget && price >= position.sellTarget)
+      .sort((a, b) => a.sellTarget - b.sellTarget)
+
+    for (const position of sellPositions) {
+      if (next.positions.some((candidate) => candidate.id === position.id)) {
+        next = fillSell(next, position)
+      }
     }
-    const position: Position = {
-      id: makeId("pos"),
-      gridId: buyLevel.index,
-      symbol: state.symbol,
-      gridPrice: buyLevel.price,
-      buyPrice,
-      quantity,
-      sellTarget,
-      openedAt: Date.now(),
+  } else if (price < previousPrice) {
+    const levels = buildGridLevels(next.config, new Set(next.positions.map((position) => position.gridId)))
+      .filter(
+        (level) =>
+          level.index >= 1 &&
+          level.index <= next.config.gridCount - 1 &&
+          level.state === "READY" &&
+          previousPrice > level.price &&
+          price <= level.price,
+      )
+      .sort((a, b) => b.price - a.price)
+
+    for (const level of levels) {
+      const estimatedFee = round(next.config.orderAmount * next.config.feeRate, 2)
+      if (next.balance.quote < next.config.orderAmount + estimatedFee) break
+      if (!next.positions.some((position) => position.gridId === level.index)) {
+        next = fillBuy(next, level)
+      }
     }
-    next = {
-      ...next,
-      positions: [...state.positions, position],
-      trades: [trade, ...state.trades].slice(0, 80),
-      balance: {
-        quote: round(state.balance.quote - state.config.orderAmount - fee, 4),
-        base: round(state.balance.base + quantity, 6),
-      },
-    }
-    return next
   }
 
   return next
+}
+
+function updateActiveBot(state: State, update: (bot: MockBotState) => MockBotState): State {
+  const activeBot = state.bots[state.activeBotId]
+  return {
+    ...state,
+    bots: { ...state.bots, [state.activeBotId]: update(activeBot) },
+  }
 }
 
 function reducer(state: State, action: Action): State {
@@ -224,77 +283,82 @@ function reducer(state: State, action: Action): State {
     case "INIT_DONE":
       return { ...state, loading: false }
     case "TICK":
-      return tick(state)
-    case "SET_TAB":
-      return { ...state, bottomTab: action.tab }
+      return {
+        ...state,
+        bots: Object.fromEntries(
+          Object.entries(state.bots).map(([id, bot]) => [id, tickBot(bot)]),
+        ) as Record<BotId, MockBotState>,
+      }
+    case "SET_ACTIVE_BOT":
+      return action.botId === state.activeBotId ? state : { ...state, activeBotId: action.botId }
     case "SET_TIMEFRAME":
-      return {
-        ...state,
-        timeframe: action.timeframe,
-        candles: updateLastCandle(generateCandles(state.symbol, action.timeframe), state.currentPrice),
-      }
-    case "SET_SYMBOL": {
-      if (action.symbol === state.symbol) return state
-      const meta = getSymbolMeta(action.symbol)
-      const config: BotConfig = {
-        ...state.config,
-        symbol: action.symbol,
-        lowerPrice: round(meta.referencePrice * 0.86, meta.pricePrecision),
-        upperPrice: round(meta.referencePrice * 1.14, meta.pricePrecision),
-      }
-      return {
-        ...state,
-        symbol: action.symbol,
-        config,
-        candles: generateCandles(action.symbol, state.timeframe),
-        currentPrice: meta.referencePrice,
-        priceDir: null,
-        ...freshScenario(config),
-      }
-    }
+      return { ...state, timeframe: action.timeframe }
     case "START":
-      return state.botStatus === "STOPPED" ? { ...state, botStatus: "RUNNING" } : state
+      return updateActiveBot(state, (bot) =>
+        bot.botStatus === "STOPPED"
+          ? { ...bot, botStatus: "RUNNING", previousPrice: null, priceDir: null }
+          : bot,
+      )
     case "PAUSE":
-      return state.botStatus === "RUNNING" ? { ...state, botStatus: "PAUSED" } : state
+      return updateActiveBot(state, (bot) =>
+        bot.botStatus === "RUNNING" ? { ...bot, botStatus: "PAUSED" } : bot,
+      )
     case "RESUME":
-      return state.botStatus === "PAUSED" ? { ...state, botStatus: "RUNNING" } : state
+      return updateActiveBot(state, (bot) =>
+        bot.botStatus === "PAUSED" ? { ...bot, botStatus: "RUNNING" } : bot,
+      )
     case "STOP":
-      return state.botStatus === "STOPPED" ? state : { ...state, botStatus: "STOPPED" }
-    case "UPDATE_CONFIG": {
-      // Editing settings is only allowed while STOPPED with no open positions.
-      if (state.botStatus !== "STOPPED" || state.positions.length > 0) return state
-      const symbolChanged = action.config.symbol !== state.symbol
-      const meta = getSymbolMeta(action.config.symbol)
-      return {
-        ...state,
-        config: action.config,
-        symbol: action.config.symbol,
-        candles: symbolChanged
-          ? generateCandles(action.config.symbol, state.timeframe)
-          : updateLastCandle(state.candles, symbolChanged ? meta.referencePrice : state.currentPrice),
-        currentPrice: symbolChanged ? meta.referencePrice : state.currentPrice,
-        ...freshScenario(action.config),
-      }
-    }
-    case "RESET_CONFIG": {
-      if (state.botStatus !== "STOPPED" || state.positions.length > 0) return state
-      return {
-        ...state,
-        config: DEFAULT_CONFIG,
-        symbol: DEFAULT_CONFIG.symbol,
-        candles: generateCandles(DEFAULT_CONFIG.symbol, state.timeframe),
-        currentPrice: getSymbolMeta(DEFAULT_CONFIG.symbol).referencePrice,
-        ...freshScenario(DEFAULT_CONFIG),
-      }
-    }
+      return updateActiveBot(state, (bot) =>
+        bot.botStatus === "STOPPED" ? bot : { ...bot, botStatus: "STOPPED" },
+      )
+    case "UPDATE_CONFIG":
+      return updateActiveBot(state, (bot) => {
+        if (bot.botStatus !== "STOPPED" || bot.positions.length > 0) return bot
+        const config = { ...action.config, symbol: bot.config.symbol }
+        const currentPrice = getSymbolMeta(config.symbol).referencePrice
+        return {
+          ...bot,
+          config,
+          currentPrice,
+          previousPrice: currentPrice,
+          priceDir: null,
+          candles: makeCandleMap(bot.config.symbol),
+          ...freshScenario(config),
+        }
+      })
+    case "RESET_CONFIG":
+      return updateActiveBot(state, (bot) => {
+        if (bot.botStatus !== "STOPPED" || bot.positions.length > 0) return bot
+        const config = configForSymbol(bot.config.symbol)
+        const currentPrice = getSymbolMeta(config.symbol).referencePrice
+        return {
+          ...bot,
+          config,
+          currentPrice,
+          previousPrice: currentPrice,
+          priceDir: null,
+          candles: makeCandleMap(config.symbol),
+          ...freshScenario(config),
+        }
+      })
     default:
       return state
   }
 }
 
 interface BotStore extends State {
+  botStatus: BotStatus
+  connection: ConnectionStatus
+  config: BotConfig
+  symbol: SymbolId
+  candles: Candle[]
+  currentPrice: number
+  priceDir: "up" | "down" | null
+  positions: Position[]
+  trades: Trade[]
+  balance: PaperBalance
+  realizedPnl: number
   configEditable: boolean
-  symbolChangeable: boolean
   gridLevels: ReturnType<typeof buildGridLevels>
   portfolio: ReturnType<typeof computePortfolio>
   dispatch: React.Dispatch<Action>
@@ -317,18 +381,29 @@ export function BotStoreProvider({ children }: { children: React.ReactNode }) {
   }, [state.loading])
 
   const value = React.useMemo<BotStore>(() => {
-    const openGridIds = new Set(state.positions.map((p) => p.gridId))
+    const bot = state.bots[state.activeBotId]
+    const openGridIds = new Set(bot.positions.map((position) => position.gridId))
     return {
       ...state,
-      configEditable: state.botStatus === "STOPPED" && state.positions.length === 0,
-      symbolChangeable: state.botStatus === "STOPPED",
-      gridLevels: buildGridLevels(state.config, openGridIds),
+      botStatus: bot.botStatus,
+      connection: bot.connection,
+      config: bot.config,
+      symbol: bot.config.symbol,
+      candles: bot.candles[state.timeframe],
+      currentPrice: bot.currentPrice,
+      priceDir: bot.priceDir,
+      positions: bot.positions,
+      trades: bot.trades,
+      balance: bot.balance,
+      realizedPnl: bot.realizedPnl,
+      configEditable: bot.botStatus === "STOPPED" && bot.positions.length === 0,
+      gridLevels: buildGridLevels(bot.config, openGridIds),
       portfolio: computePortfolio(
-        state.balance,
-        state.positions,
-        state.realizedPnl,
-        state.currentPrice,
-        state.config.initialQuoteBalance,
+        bot.balance,
+        bot.positions,
+        bot.realizedPnl,
+        bot.currentPrice,
+        bot.config.initialQuoteBalance,
       ),
       dispatch,
     }

@@ -46,7 +46,7 @@ export function OpenPositionsTable() {
       </TableHeader>
       <TableBody>
         {rows.map((p) => {
-          const pnl = (currentPrice - p.buyPrice) * p.quantity
+          const pnl = (currentPrice - p.buyPrice) * p.quantity - p.buyFee
           const pnlPct = ((currentPrice - p.buyPrice) / p.buyPrice) * 100
           return (
             <TableRow key={p.id} className="font-mono tabular-nums">

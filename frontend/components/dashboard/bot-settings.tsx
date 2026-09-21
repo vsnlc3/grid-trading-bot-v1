@@ -38,7 +38,7 @@ function validate(form: FormState): { errors: Partial<Record<keyof FormState, st
   if (!(lowerPrice > 0)) errors.lowerPrice = "Must be greater than 0"
   if (!(upperPrice > 0)) errors.upperPrice = "Must be greater than 0"
   if (lowerPrice > 0 && upperPrice > 0 && upperPrice <= lowerPrice) errors.upperPrice = "Must be above lower price"
-  if (!Number.isInteger(gridCount) || gridCount < 2 || gridCount > 100) errors.gridCount = "2 – 100 grids"
+  if (!Number.isInteger(gridCount) || gridCount < 1 || gridCount > 100) errors.gridCount = "1 – 100 grids"
   if (!(orderAmount > 0)) errors.orderAmount = "Must be greater than 0"
   if (!(initialQuoteBalance > 0)) errors.initialQuoteBalance = "Must be greater than 0"
   if (!(feeRate >= 0) || feeRate > 0.01) errors.feeRate = "0 – 0.01"
@@ -72,7 +72,7 @@ export function BotSettings() {
     const lo = Number(form.lowerPrice)
     const hi = Number(form.upperPrice)
     const gc = Number(form.gridCount)
-    if (hi > lo && gc >= 2) return (hi - lo) / gc
+    if (hi > lo && gc >= 1) return (hi - lo) / gc
     return gridInterval(config)
   }, [form, config])
 
