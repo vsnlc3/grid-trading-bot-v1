@@ -44,6 +44,48 @@ MVPでは以下を実装する。
 
 ---
 
+## 2.1 複数Bot
+
+v1では、複数のGrid Botを同時に稼働できるものとする。
+
+基本単位は以下とする。
+
+```text
+1 Bot = 1 Symbol = 1 Paper Account
+```
+
+各Botは独立して以下を保持する。
+
+```text
+Bot Status
+Bot Config
+Paper Account
+Positions
+Trades
+PnL
+Previous Price
+```
+
+Paper AccountはBot間で共有しない。
+複数Botが同時にRUNNINGとなることを許可する。
+
+DashboardのSelectorは既存BotのSymbolを書き換える操作ではなく、
+表示対象Botを切り替える操作とする。
+
+例：
+
+```text
+HYPE/USDC Bot
+BTC/USDC Bot
+ETH/USDC Bot
+```
+
+表示対象を切り替えても、非表示のBotのStatus、Balance、Position、Trade、
+PnLは保持され、RUNNING中のBotはバックグラウンドで動作を継続する。
+v1ではBotの作成・削除UIは対象外とする。
+
+---
+
 ## 3. Grid Trading仕様
 
 ### 3.1 基本戦略
@@ -78,8 +120,8 @@ Bot作成時に以下を指定できる。
 
 | 項目 | 内容 |
 | --- | --- |
-| Symbol | BTC/USDT等 |
-| Initial Capital | 初期仮想資金 |
+| Symbol | BTC/USDC等 |
+| Initial Quote Balance / Initial Capital | 初期Paper AccountのQuote残高 |
 | Grid Lower Price | Grid下限 |
 | Grid Upper Price | Grid上限 |
 | Grid Count | Grid分割数 |
@@ -87,16 +129,32 @@ Bot作成時に以下を指定できる。
 | Trading Fee | 仮想手数料率 |
 | Slippage | 仮想スリッページ率 |
 
+Application側のSymbol表記は、以下のような`BASE/QUOTE`形式を基本とする。
+
+```text
+BTC/USDC
+ETH/USDC
+SOL/USDC
+HYPE/USDC
+```
+
 Initial CapitalおよびOrder AmountはQuote Asset単位とする。
 
 例：
 
 ```text
-BTC/USDTの場合
+BTC/USDCの場合
 
-Quote Asset = USDT
+Quote Asset = USDC
 Base Asset  = BTC
 ```
+
+Initial Quote Balance（Initial Capital）は、Botの初期Paper Accountを作成する際の初期値とする。
+Botが一度稼働を開始した後は、既存のQuote BalanceやPnLの基準を書き換える目的で編集できない。
+既存BotではInitial Quote Balanceを読み取り専用として扱う。
+
+Returnの基準となるInitial Portfolio ValueはBot作成時に確定し、Botの稼働中に変化しない。
+Grid設定や現在の残高を変更しても、Initial Portfolio Valueは再計算しない。
 
 Grid間隔は以下の式で算出する。
 
@@ -138,6 +196,15 @@ Grid Line Count  = 11
 100,000
 ```
 
+Lower PriceからUpper PriceまでGrid Lineを生成する。
+
+Upper PriceはGrid Rangeの上限であり、SELL Targetとして利用できる。
+ただし、Upper Priceには1つ上のGrid Lineが存在しないため、Upper Priceで新規BUYは発生させない。
+
+BUY対象となるGridは、1つ上のGrid LineをSELL Targetとして持てるGridのみとする。
+したがって、Grid Countが10の場合、Grid Lineは11本生成されるが、
+新規BUY対象はLower PriceからUpper Priceの1つ下のGrid Lineまでとなる。
+
 ---
 
 ### 3.3 Grid範囲
@@ -151,6 +218,9 @@ Grid Upper Price
 ```
 
 価格がGrid範囲外にある場合、新規BUYは発生させない。
+
+Upper Priceでは新規BUYを発生させない。Upper PriceはGrid Rangeの上限および
+SELL Targetとしてのみ利用する。
 
 ---
 
@@ -200,7 +270,7 @@ Paper Tradingでは実際の資金・暗号資産を使用しない。
 Quote Balance
 
 例:
-10,000 USDT
+10,000 USDC
 
 
 Base Balance
@@ -305,7 +375,7 @@ Order Amountは1回のBUYで使用するQuote Assetの注文金額とする。
 例：
 
 ```text
-Order Amount = 100 USDT
+Order Amount = 100 USDC
 ```
 
 購入数量は以下を基準として算出する。
@@ -318,7 +388,13 @@ Order Amount / Buy Execution Price
 
 Trading FeeはOrder Amountとは別に計算する。
 
-BUYに必要なQuote Balanceが不足している場合、そのBUYは実行しない。
+BUY時に必要なQuote Balanceは、以下を満たす場合のみBUYを実行する。
+
+```text
+Quote Balance >= Order Amount + BUY Fee
+```
+
+不足している場合、そのBUYはSkipする。
 
 ---
 
@@ -418,7 +494,7 @@ timestamp
 
 ```json
 {
-  "symbol": "BTCUSDT",
+  "symbol": "BTC/USDC",
   "price": 100250.52,
   "timestamp": "2026-09-19T10:00:00Z"
 }
@@ -582,7 +658,9 @@ Open Position Count = 0
 
 ## 8. 仮想残高管理
 
-Botは以下の仮想残高を管理する。
+各Botは、他のBotと共有しない独立したPaper Accountを持つ。
+
+各Paper Accountは以下の仮想残高を管理する。
 
 ```text
 Quote Balance
@@ -593,7 +671,7 @@ Base Balance
 
 ```text
 Quote Balance
-10,000 USDT
+10,000 USDC
 
 Base Balance
 0.02 BTC
@@ -635,7 +713,7 @@ Quote Balance
 
 ## 9. ポジション管理
 
-BUYが発生した場合、未決済ポジションとして管理する。
+BUYが発生した場合、該当Botの未決済ポジションとして管理する。
 
 最低限以下の情報を保持する。
 
@@ -669,7 +747,7 @@ SELL完了後はCLOSEDとする。
 
 ## 10. 売買履歴
 
-すべての仮想約定を履歴として保存する。
+すべての仮想約定を該当Bot単位の履歴として保存する。
 
 最低限以下を保持する。
 
@@ -771,9 +849,9 @@ Base Balance × Current Price
 ```text
 Return %
 =
-(Current Portfolio Value - Initial Capital)
+(Current Portfolio Value - Initial Portfolio Value)
 /
-Initial Capital
+Initial Portfolio Value
 × 100
 ```
 
@@ -795,7 +873,7 @@ Grid Lower Price
 Grid Upper Price
 Grid Count
 
-Initial Capital
+Initial Quote Balance
 Quote Balance
 Base Balance
 Portfolio Value
@@ -824,6 +902,10 @@ Bot Pause
 Bot Stop
 ```
 
+Dashboardでは複数Botの表示対象を切り替えて、各Botの状態と結果を確認できること。
+SelectorによってBotのSymbol、Paper Account、Position、Tradeを別Botのものへ
+リセットしてはならない。
+
 具体的なレイアウト、デザイン、チャート形式、表示方法については別途画面設計で定義する。
 
 ---
@@ -838,7 +920,6 @@ grid_levels
 paper_accounts
 positions
 trades
-price_snapshots
 ```
 
 ### bots
@@ -894,7 +975,9 @@ BUY / SELLの約定履歴を保存する。
 
 ### price_snapshots
 
-価格推移を確認するための価格データを保存する。
+`price_snapshots`はv1の必須永続化対象ではない。
+
+長期的な独自価格履歴が必要になった場合に、将来導入できるものとする。
 
 ---
 
@@ -902,13 +985,16 @@ BUY / SELLの約定履歴を保存する。
 
 Grid判定にはリアルタイムの価格データを利用する。
 
-一方、取得したすべてのリアルタイムTickを永続化するとデータ量が増加するため、
+Historical ChartはHyperliquidの`candleSnapshot`を利用し、
+Realtime ChartはHyperliquid WebSocketの`candle`を利用する。
 
-**Bot判定用のリアルタイムデータと、保存用の価格データを分離する。**
+v1では長期間の独自Historical Data保存を必須としない。
+取得したすべてのRealtime TickをDBへ保存しない。
 
-保存用価格データは一定間隔で保存できる設計とする。
+Grid Strategyは`price_snapshots`に依存せず、Grid判定にはRealtimeのPrice Eventを利用する。
 
-保存間隔などの具体的な仕様は実装設計時に決定する。
+長期価格履歴が必要になった場合の`price_snapshots`導入方法や保存間隔は、
+将来の実装設計で決定する。
 
 ---
 
@@ -982,6 +1068,12 @@ ExecutionEngine
 35. 未決済ポジションを確認できる
 36. 売買履歴を確認できる
 37. 実注文が一切発生しない
+38. 複数Botを同時にRUNNINGにできる
+39. 1 Botが1 Symbolを持つ
+40. Botごとに独立したPaper Accountを保持できる
+41. BotごとにPosition、Trade、PnL、Previous Priceを管理できる
+42. DashboardのSelectorで表示対象Botを切り替えられる
+43. 非表示のRUNNING Botが動作を継続できる
 
 ---
 
